@@ -113,10 +113,17 @@ def upload_full_video_resumable(
     logger.info("Resumable start: video_id=%s, first window=%d-%d", video_id, start_offset, end_offset)
 
     # --- transfer phase ---
+    # NOTE: FB's transfer response for graph-video /videos often returns just
+    # {"id": ...} WITHOUT the next start/end offsets. When that happens we
+    # must ask the session where to continue (upload_phase=query) and send a
+    # regular-size chunk; defaulting the window to the stale value produced
+    # zero-length chunks and error 381.
+    DEFAULT_WINDOW = chunk_size
     with open(video_path, "rb") as f:
         while start_offset < size:
+            chunk_len = max(1, end_offset - start_offset)
             f.seek(start_offset)
-            chunk = f.read(end_offset - start_offset)
+            chunk = f.read(chunk_len)
             result = None
             for attempt in range(1, 4):  # FB 381s are often transient; retry chunk
                 transfer_res = requests.post(
@@ -148,8 +155,32 @@ def upload_full_video_resumable(
                 break
             if result is None:
                 raise PublishingError(f"FB transfer failed after retries at offset {start_offset}")
-            start_offset = int(result.get("start_offset", end_offset))
-            end_offset = int(result.get("end_offset", end_offset))
+
+            if "start_offset" in result:
+                # FB told us the next window explicitly.
+                start_offset = int(result["start_offset"])
+                end_offset = int(result.get("end_offset", start_offset + DEFAULT_WINDOW))
+            else:
+                # Response lacks offsets: query the session for authoritative state.
+                query = requests.post(
+                    url,
+                    data={
+                        "upload_phase": "query",
+                        "video_id": video_id,
+                        "upload_session_id": session_id,
+                        "access_token": page_access_token,
+                    },
+                    timeout=60,
+                ).json()
+                q_start = int(query.get("start_offset", start_offset + chunk_len))
+                q_end = int(query.get("end_offset", q_start + DEFAULT_WINDOW))
+                if q_start <= start_offset and q_end <= start_offset:
+                    # Query unhelpful; advance by what we just sent.
+                    start_offset = start_offset + chunk_len
+                    end_offset = start_offset + DEFAULT_WINDOW
+                else:
+                    start_offset, end_offset = q_start, max(q_end, q_start + 1)
+            end_offset = min(max(end_offset, start_offset + 1), size)
             logger.info("Resumable progress: %d/%d bytes (%.0f%%), next window=%d-%d",
                         start_offset, size, 100 * start_offset / size, start_offset, end_offset)
 
