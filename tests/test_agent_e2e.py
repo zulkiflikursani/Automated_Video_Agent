@@ -112,10 +112,13 @@ def test_full_pipeline_end_to_end(db, synthetic_video, tmp_path):
             # 5. GC removes local media (PRD 6: zero disk bloat)
             clip_paths = [c.local_clip_path for c in video.clips]
             raw_path = video.local_raw_path
+            full_path = video.local_full_path
 
         removed = agent.run_garbage_collector()
 
-        assert removed == len(clip_paths) + 1
+        # raw + processed full + every clip
+        assert removed == len(clip_paths) + 2
+        assert not os.path.exists(full_path)
         assert not os.path.exists(raw_path)
         for p in clip_paths:
             assert not os.path.exists(p)
