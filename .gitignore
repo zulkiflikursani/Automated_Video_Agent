@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Env / secrets
+.env
+
+# Databases
+*.db
+*.sqlite3
+
+# Media pipeline artifacts
+downloads/
+processed/
+temp/
+logs/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+
+# OS / tooling
+.DS_Store
+.freebuff/
