@@ -114,32 +114,44 @@ def upload_full_video_resumable(
 
     # --- transfer phase ---
     with open(video_path, "rb") as f:
-        f.seek(start_offset)
         while start_offset < size:
             f.seek(start_offset)
             chunk = f.read(end_offset - start_offset)
-            transfer_res = requests.post(
-                url,
-                headers={
-                    "Authorization": f"OAuth {page_access_token}",
-                    "file_size": str(size),
-                    "offset": str(start_offset),
-                },
-                files={"file_chunk": chunk},
-                timeout=1800,
-            )
-            try:
-                result = transfer_res.json()
-            except ValueError:
-                raise PublishingError(
-                    f"FB transfer returned non-JSON at offset {start_offset}: "
-                    f"HTTP {transfer_res.status_code}: {transfer_res.text[:200]}"
+            result = None
+            for attempt in range(1, 4):  # FB 381s are often transient; retry chunk
+                transfer_res = requests.post(
+                    url,
+                    headers={
+                        "Authorization": f"OAuth {page_access_token}",
+                        "file_size": str(size),
+                        "offset": str(start_offset),
+                    },
+                    files={
+                        "file_chunk": (
+                            os.path.basename(video_path), chunk, "video/mp4"
+                        )
+                    },
+                    timeout=1800,
                 )
-            if "error" in result:
-                raise PublishingError(f"FB transfer error at offset {start_offset}: {result['error']}")
+                try:
+                    result = transfer_res.json()
+                except ValueError:
+                    logger.warning("Chunk @%d attempt %d: non-JSON HTTP %s",
+                                   start_offset, attempt, transfer_res.status_code)
+                    result = None
+                    continue
+                if "error" in result:
+                    logger.warning("Chunk @%d attempt %d failed: %s",
+                                   start_offset, attempt, str(result["error"])[:150])
+                    result = None
+                    continue
+                break
+            if result is None:
+                raise PublishingError(f"FB transfer failed after retries at offset {start_offset}")
             start_offset = int(result.get("start_offset", end_offset))
             end_offset = int(result.get("end_offset", end_offset))
-            logger.info("Resumable progress: %d/%d bytes (%.0f%%)", start_offset, size, 100 * start_offset / size)
+            logger.info("Resumable progress: %d/%d bytes (%.0f%%), next window=%d-%d",
+                        start_offset, size, 100 * start_offset / size, start_offset, end_offset)
 
     # --- finish phase ---
     finish_res = requests.post(
