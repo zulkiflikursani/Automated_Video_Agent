@@ -99,7 +99,7 @@ def process_full_video(input_path: str, output_path: str, watermark_text: Option
             "ffmpeg", "-y", "-i", input_path, "-i", tmp_png,
             "-filter_complex", filter_complex,
             "-map", "[v]", "-map", "[a]",
-            "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+            "-c:v", "libx264", "-preset", config.FFMPEG_PRESET, "-crf", config.FFMPEG_CRF,
             "-c:a", "aac",
             output_path,
         ]
@@ -152,7 +152,7 @@ def generate_reels_clip(
             "-i", tmp_title, "-i", tmp_part,
             "-filter_complex", filter_complex,
             "-map", "[outv]", "-map", "[outa]",
-            "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+            "-c:v", "libx264", "-preset", config.FFMPEG_PRESET, "-crf", config.FFMPEG_CRF,
             "-c:a", "aac",
             output_path,
         ]

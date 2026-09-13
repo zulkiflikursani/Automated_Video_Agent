@@ -41,6 +41,10 @@ CLIP_DURATION_MAX_SEC: int = int(os.getenv("CLIP_DURATION_MAX_SEC", "60"))
 # Comma-separated player clients; android avoids YouTube SABR web restrictions.
 YT_PLAYER_CLIENTS: str = os.getenv("YT_PLAYER_CLIENTS", "android")
 
+# ===== FFmpeg tuning =====
+FFMPEG_PRESET: str = os.getenv("FFMPEG_PRESET", "fast")
+FFMPEG_CRF: str = os.getenv("FFMPEG_CRF", "23")
+
 # ===== Safety =====
 # true = validate pipeline without calling Facebook (dry-run mode)
 DRY_RUN: bool = os.getenv("DRY_RUN", "true").strip().lower() in ("1", "true", "yes")

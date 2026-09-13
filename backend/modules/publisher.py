@@ -40,7 +40,8 @@ def upload_full_video(
     title: str,
     description: str,
 ) -> dict:
-    """Upload a regular page video (non-resumable simple POST per PRD 4.3)."""
+    """Upload a regular page video. Uses the resumable/chunked protocol for
+    large files (>20MB) and the simple multipart POST for small ones."""
     size = _validate_media_file(video_path)
     if config.DRY_RUN:
         logger.info("[DRY-RUN] Full video upload validated: %s (%d bytes)", video_path, size)
@@ -48,6 +49,11 @@ def upload_full_video(
 
     if not page_id or not page_access_token:
         raise MissingCredentials("FB_PAGE_ID / FB_PAGE_ACCESS_TOKEN not configured")
+
+    if size > 20 * 1024 * 1024:
+        return upload_full_video_resumable(
+            page_id, page_access_token, video_path, title, description
+        )
 
     url = f"https://graph-video.facebook.com/{config.FB_GRAPH_VERSION}/{page_id}/videos"
     payload = {
@@ -61,6 +67,97 @@ def upload_full_video(
     if "error" in result:
         raise PublishingError(f"FB video API error: {result['error']}")
     return result
+
+
+def upload_full_video_resumable(
+    page_id: str,
+    page_access_token: str,
+    video_path: str,
+    title: str,
+    description: str,
+    chunk_size: int = 8 * 1024 * 1024,
+) -> dict:
+    """Resumable/chunked upload (start -> transfer per chunk -> finish).
+
+    Required for large files; FB returns empty/garbled responses for single
+    huge multipart POSTs. Docs: graph-video /videos resumable protocol.
+    """
+    size = _validate_media_file(video_path)
+    if config.DRY_RUN:
+        logger.info("[DRY-RUN] Resumable upload validated: %s (%d bytes)", video_path, size)
+        return {"post_id": f"dryrun_full_{uuid.uuid4().hex[:12]}", "dry_run": True}
+
+    if not page_id or not page_access_token:
+        raise MissingCredentials("FB_PAGE_ID / FB_PAGE_ACCESS_TOKEN not configured")
+
+    url = f"https://graph-video.facebook.com/{config.FB_GRAPH_VERSION}/{page_id}/videos"
+
+    # --- start phase ---
+    start_res = requests.post(
+        url,
+        data={
+            "upload_phase": "start",
+            "file_size": str(size),
+            "access_token": page_access_token,
+        },
+        timeout=60,
+    ).json()
+    if "error" in start_res:
+        raise PublishingError(f"FB resumable start error: {start_res['error']}")
+    video_id = start_res.get("video_id")
+    session_id = start_res.get("upload_session_id")
+    start_offset = int(start_res.get("start_offset", 0))
+    end_offset = int(start_res.get("end_offset", chunk_size))
+    if not video_id or not session_id:
+        raise PublishingError(f"FB resumable start incomplete: {start_res}")
+    logger.info("Resumable start: video_id=%s, first window=%d-%d", video_id, start_offset, end_offset)
+
+    # --- transfer phase ---
+    with open(video_path, "rb") as f:
+        f.seek(start_offset)
+        while start_offset < size:
+            f.seek(start_offset)
+            chunk = f.read(end_offset - start_offset)
+            transfer_res = requests.post(
+                url,
+                headers={
+                    "Authorization": f"OAuth {page_access_token}",
+                    "file_size": str(size),
+                    "offset": str(start_offset),
+                },
+                files={"file_chunk": chunk},
+                timeout=1800,
+            )
+            try:
+                result = transfer_res.json()
+            except ValueError:
+                raise PublishingError(
+                    f"FB transfer returned non-JSON at offset {start_offset}: "
+                    f"HTTP {transfer_res.status_code}: {transfer_res.text[:200]}"
+                )
+            if "error" in result:
+                raise PublishingError(f"FB transfer error at offset {start_offset}: {result['error']}")
+            start_offset = int(result.get("start_offset", end_offset))
+            end_offset = int(result.get("end_offset", end_offset))
+            logger.info("Resumable progress: %d/%d bytes (%.0f%%)", start_offset, size, 100 * start_offset / size)
+
+    # --- finish phase ---
+    finish_res = requests.post(
+        url,
+        data={
+            "upload_phase": "finish",
+            "access_token": page_access_token,
+            "video_id": video_id,
+            "upload_session_id": session_id,
+            "title": title,
+            "description": description,
+        },
+        timeout=60,
+    ).json()
+    if "error" in finish_res:
+        raise PublishingError(f"FB resumable finish error: {finish_res['error']}")
+    logger.info("Resumable finish: %s", finish_res)
+    return finish_res
 
 
 def upload_reels_video(
