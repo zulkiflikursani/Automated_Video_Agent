@@ -9,11 +9,16 @@ from backend import config
 logger = logging.getLogger(__name__)
 
 
+def _yt_base_opts() -> dict:
+    """Common yt-dlp options (player clients beat YouTube's SABR web lock)."""
+    clients = [c.strip() for c in config.YT_PLAYER_CLIENTS.split(",") if c.strip()]
+    return {"quiet": True, "no_warnings": True, "extractor_args": {"youtube": {"player_client": clients}}} if clients else {"quiet": True, "no_warnings": True}
+
+
 def list_source_videos(source_url: str) -> list:
     """Return flat entries [{id, title, url, duration}] for a channel/playlist URL."""
     opts = {
-        "quiet": True,
-        "no_warnings": True,
+        **_yt_base_opts(),
         "extract_flat": "in_playlist",
         "skip_download": True,
     }
@@ -41,11 +46,10 @@ def download_video(url: str, video_id: str) -> str:
     os.makedirs(config.DOWNLOADS_DIR, exist_ok=True)
     outtmpl = os.path.join(config.DOWNLOADS_DIR, f"{video_id}.%(ext)s")
     opts = {
+        **_yt_base_opts(),
         "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
         "merge_output_format": "mp4",
         "outtmpl": outtmpl,
-        "quiet": True,
-        "no_warnings": True,
         "noplaylist": True,
         "overwrites": True,
     }

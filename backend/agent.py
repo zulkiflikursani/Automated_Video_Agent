@@ -209,7 +209,10 @@ def _publish_entry(db: Session, entry: models.PublishingQueue) -> bool:
             )
 
         entry.status = "SUCCESS"
-        entry.fb_post_id = str(result.get("post_id") or result.get("success") or "")
+        # /videos returns "id", /video_reels finish may return "post_id"/"success"
+        entry.fb_post_id = str(
+            result.get("post_id") or result.get("id") or result.get("success") or ""
+        )
         entry.published_at = datetime.now(timezone.utc)
         entry.logs = f"Published at {entry.published_at.isoformat()}"
         if entry.post_type == "REELS" and entry.clip_id:

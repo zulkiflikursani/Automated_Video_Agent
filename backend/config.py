@@ -37,6 +37,10 @@ CLIPS_MAX: int = int(os.getenv("CLIPS_MAX", "5"))
 CLIP_DURATION_MIN_SEC: int = int(os.getenv("CLIP_DURATION_MIN_SEC", "30"))
 CLIP_DURATION_MAX_SEC: int = int(os.getenv("CLIP_DURATION_MAX_SEC", "60"))
 
+# ===== yt-dlp =====
+# Comma-separated player clients; android avoids YouTube SABR web restrictions.
+YT_PLAYER_CLIENTS: str = os.getenv("YT_PLAYER_CLIENTS", "android")
+
 # ===== Safety =====
 # true = validate pipeline without calling Facebook (dry-run mode)
 DRY_RUN: bool = os.getenv("DRY_RUN", "true").strip().lower() in ("1", "true", "yes")
