@@ -1,4 +1,4 @@
-"""Default rows seeded into system_settings on first init."""
+"""Default rows seeded into system_settings on first init + read helpers."""
 from backend import config
 
 DEFAULT_SETTINGS = {
