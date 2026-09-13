@@ -14,6 +14,8 @@ from sqlalchemy.orm import Session
 
 from backend import agent, config, models
 from backend.db import get_db, init_db, session_scope
+from backend.modules import keywords
+from backend.modules import ingestion as ingestion_mod
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +54,18 @@ class QueuePatch(BaseModel):
 
 class SettingsPatch(BaseModel):
     value: str
+
+
+class DiscoverIn(BaseModel):
+    keyword: str
+    limit: int = 10
+
+
+class DiscoverAddIn(BaseModel):
+    video_id: str
+    title: str
+    url: str
+    duration: Optional[int] = None
 
 
 # ---------- health & metrics ----------
@@ -258,6 +272,66 @@ def update_setting(key: str, payload: SettingsPatch, db: Session = Depends(get_d
     row.value = payload.value
     db.commit()
     return {"key": key, "updated": True}
+
+
+# ---------- live pipeline progress ----------
+
+@app.get("/api/progress")
+def progress(limit: int = 80, db: Session = Depends(get_db)):
+    """Recent pipeline events, newest first (download/process/upload/publish)."""
+    events = (
+        db.query(models.JobEvent)
+        .order_by(models.JobEvent.id.desc())
+        .limit(min(limit, 200))
+        .all()
+    )
+    return [
+        {
+            "id": e.id, "stage": e.stage, "video_ref": e.video_ref,
+            "title": e.title, "percent": e.percent, "detail": e.detail,
+            "created_at": _iso(e.created_at),
+        }
+        for e in events
+    ]
+
+
+# ---------- discover: keyword search -> pipeline ----------
+
+@app.get("/api/keywords")
+def keyword_templates():
+    """Curated keyword template groups for the Discover panel."""
+    return {"groups": keywords.KEYWORD_GROUPS, "default": keywords.DEFAULT_KEYWORD}
+
+
+@app.post("/api/discover")
+def discover(payload: DiscoverIn):
+    """Search YouTube by keyword (dynamic input from the dashboard)."""
+    err = keywords.validate(payload.keyword)
+    if err:
+        raise HTTPException(422, err)
+    try:
+        results = ingestion_mod.search_youtube(
+            keywords.expand(payload.keyword, payload.limit), payload.limit
+        )
+    except Exception as exc:  # noqa: BLE001 - surface search failures to UI
+        raise HTTPException(502, f"Search failed: {str(exc)[:300]}")
+    return {"keyword": payload.keyword, "count": len(results), "results": results}
+
+
+@app.post("/api/discover/add", status_code=201)
+def discover_add(payload: DiscoverAddIn, db: Session = Depends(get_db)):
+    """Send a discovered video into the pipeline (status PENDING)."""
+    if db.query(models.Video).filter_by(source_video_id=payload.video_id).first():
+        raise HTTPException(409, "Video already in pipeline")
+    video = models.Video(
+        source_video_id=payload.video_id,
+        title=payload.title[:500],
+        duration=payload.duration,
+        original_url=payload.url,
+    )
+    db.add(video)
+    db.commit()
+    return {"id": video.id, "source_video_id": video.source_video_id, "status": video.status}
 
 
 # ---------- manual triggers (PRD 5.1: Run Cron Now / Cleanup) ----------

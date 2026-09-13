@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-const NAV = ["Overview", "Sources", "Queue", "Clips", "Logs", "Settings"];
+const NAV = ["Overview", "Discover", "Progress", "Sources", "Queue", "Clips", "Logs", "Settings"];
 
 export default function Home() {
   const [tab, setTab] = useState("Overview");
@@ -15,9 +15,15 @@ export default function Home() {
   const [busy, setBusy] = useState(false);
   const [form, setForm] = useState({ name: "", url: "", platform: "youtube", check_interval_hours: 6 });
   const [notice, setNotice] = useState("");
+  const [keywordGroups, setKeywordGroups] = useState({});
+  const [discoverKeyword, setDiscoverKeyword] = useState("drama cina sub indo 10");
+  const [discoverLimit, setDiscoverLimit] = useState(10);
+  const [discoverResults, setDiscoverResults] = useState(null);
+  const [discoverBusy, setDiscoverBusy] = useState(false);
+  const [progressEvents, setProgressEvents] = useState([]);
 
   const refreshAll = async () => {
-    const [h, m, s, q, c, l, st, v] = await Promise.all([
+    const [h, m, s, q, c, l, st, v, k] = await Promise.all([
       fetch("/api/health").then((r) => r.json()).catch(() => null),
       fetch("/api/metrics").then((r) => r.json()).catch(() => null),
       fetch("/api/sources").then((r) => r.json()).catch(() => []),
@@ -26,6 +32,7 @@ export default function Home() {
       fetch("/api/logs").then((r) => r.json()).catch(() => []),
       fetch("/api/settings").then((r) => r.json()).catch(() => []),
       fetch("/api/videos").then((r) => r.json()).catch(() => []),
+      fetch("/api/keywords").then((r) => r.json()).catch(() => ({})),
     ]);
     setHealth(h);
     setMetrics(m);
@@ -35,12 +42,20 @@ export default function Home() {
     setLogs(Array.isArray(l) ? l : []);
     setSettings(Array.isArray(st) ? st : []);
     setVideos(Array.isArray(v) ? v : []);
+    setKeywordGroups(k?.groups || {});
+  };
+
+  const refreshProgress = async () => {
+    const p = await fetch("/api/progress").then((r) => r.json()).catch(() => []);
+    setProgressEvents(Array.isArray(p) ? p : []);
   };
 
   useEffect(() => {
     refreshAll();
+    refreshProgress();
     const t = setInterval(refreshAll, 15000);
-    return () => clearInterval(t);
+    const tp = setInterval(refreshProgress, 3000);  // live pipeline progress
+    return () => { clearInterval(t); clearInterval(tp); };
   }, []);
 
   const flash = (msg) => {
@@ -131,6 +146,47 @@ export default function Home() {
     refreshAll();
   };
 
+  const searchDiscover = async (e) => {
+    e && e.preventDefault();
+    setDiscoverBusy(true);
+    const res = await fetch("/api/discover", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ keyword: discoverKeyword, limit: discoverLimit }),
+    });
+    setDiscoverBusy(false);
+    if (res.ok) {
+      const body = await res.json();
+      setDiscoverResults(body.results);
+      flash(`Ditemukan ${body.count} video untuk "${body.keyword}"`);
+    } else {
+      const err = await res.json().catch(() => ({}));
+      flash(err.detail || "Search gagal");
+      setDiscoverResults([]);
+    }
+  };
+
+  const addToPipeline = async (r) => {
+    const res = await fetch("/api/discover/add", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ video_id: r.id, title: r.title, url: r.url, duration: r.duration }),
+    });
+    if (res.status === 409) {
+      flash("Video sudah ada di pipeline");
+    } else if (res.ok) {
+      flash(`"${r.title.slice(0, 40)}..." masuk antrean proses`);
+      setDiscoverResults((rs) => (rs || []).filter((x) => x.id !== r.id));
+      refreshAll();
+    } else {
+      flash("Gagal menambahkan video");
+    }
+  };
+
+  const applyTemplate = (tmpl) => {
+    setDiscoverKeyword(tmpl.replace("{n}", String(discoverLimit)));
+  };
+
   return (
     <div className="mx-auto max-w-7xl px-4 py-6">
       {/* Header */}
@@ -187,6 +243,11 @@ export default function Home() {
                 <Metric label="Queued" value={metrics?.queued ?? "–"} />
               </section>
 
+              <section className="card">
+                <h2 className="mb-3 font-semibold text-white">Live Pipeline Progress</h2>
+                <ProgressFeed events={progressEvents.slice(0, 6)} />
+              </section>
+
               <QueueTable
                 queue={queue.slice(0, 6)}
                 onPublishNow={publishNow}
@@ -212,6 +273,88 @@ export default function Home() {
                 </div>
               </section>
             </>
+          )}
+
+          {tab === "Discover" && (
+            <>
+              <section className="card">
+                <h2 className="mb-3 font-semibold text-white">Cari Video Trending (YouTube)</h2>
+                <form onSubmit={searchDiscover} className="flex flex-wrap gap-2">
+                  <input className="input flex-1 min-w-[16rem]"
+                         placeholder="Kata kunci, mis. drama cina CEO sub indo"
+                         value={discoverKeyword}
+                         onChange={(e) => setDiscoverKeyword(e.target.value)} />
+                  <select className="input w-24" value={discoverLimit}
+                          onChange={(e) => setDiscoverLimit(Number(e.target.value))}>
+                    {[5, 10, 15, 20, 30].map((n) => (
+                      <option key={n} value={n}>{n} video</option>
+                    ))}
+                  </select>
+                  <button className="btn-primary" disabled={discoverBusy}>
+                    {discoverBusy ? "Mencari…" : "Search"}
+                  </button>
+                </form>
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <span className="text-xs text-slate-500">Template:</span>
+                  {Object.entries(keywordGroups).map(([group, tmpls]) => (
+                    <div key={group} className="flex flex-wrap gap-1">
+                      {tmpls.map((tmpl) => (
+                        <button key={tmpl} type="button" onClick={() => applyTemplate(tmpl)}
+                                title={group}
+                                className="badge bg-slate-800 text-slate-300 hover:bg-indigo-900 hover:text-indigo-200">
+                          {tmpl}
+                        </button>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              </section>
+
+              {discoverResults && (
+                <section className="card overflow-x-auto">
+                  <h2 className="mb-3 font-semibold text-white">
+                    Hasil ({discoverResults.length}) — klik Add untuk masuk pipeline
+                  </h2>
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="text-left text-slate-400">
+                        <th className="pb-2">Title</th><th className="pb-2">Channel</th>
+                        <th className="pb-2">Duration</th><th className="pb-2">Views</th><th className="pb-2"></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {discoverResults.map((r) => (
+                        <tr key={r.id} className="border-t border-slate-800">
+                          <td className="max-w-md truncate py-2 font-medium text-slate-200">
+                            <a href={r.url} target="_blank" rel="noreferrer" className="hover:text-indigo-300">{r.title}</a>
+                          </td>
+                          <td className="py-2 text-slate-400">{r.channel}</td>
+                          <td className="py-2 text-slate-400">
+                            {r.duration ? `${Math.floor(r.duration / 60)}m ${r.duration % 60}s` : "–"}
+                          </td>
+                          <td className="py-2 text-slate-400">{r.views?.toLocaleString("id-ID")}</td>
+                          <td className="py-2 text-right">
+                            <button className="btn-primary" onClick={() => addToPipeline(r)}>+ Add</button>
+                          </td>
+                        </tr>
+                      ))}
+                      {discoverResults.length === 0 && (
+                        <tr><td colSpan="5" className="py-6 text-center text-slate-500">Tidak ada hasil.</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                </section>
+              )}
+            </>
+          )}
+
+          {tab === "Progress" && (
+            <section className="card">
+              <h2 className="mb-3 font-semibold text-white">
+                Pipeline Progress <span className="text-xs font-normal text-emerald-400">(live, refresh 3s)</span>
+              </h2>
+              <ProgressFeed events={progressEvents} />
+            </section>
           )}
 
           {tab === "Sources" && (
@@ -355,6 +498,31 @@ function Metric({ label, value }) {
     <div className="card">
       <p className="text-xs uppercase tracking-wide text-slate-500">{label}</p>
       <p className="mt-1 text-2xl font-bold text-white">{value}</p>
+    </div>
+  );
+}
+
+function ProgressFeed({ events }) {
+  if (!events.length) return <p className="text-sm text-slate-500">Belum ada aktivitas pipeline.</p>;
+  return (
+    <div className="space-y-2">
+      {events.map((ev) => (
+        <div key={ev.id} className="flex items-center gap-3">
+          <span className={`w-20 shrink-0 badge ${
+            ev.stage === "publish" ? "bg-emerald-500/20 text-emerald-300" :
+            ev.stage === "upload" ? "bg-fuchsia-500/20 text-fuchsia-300" :
+            ev.stage === "process" ? "bg-amber-500/20 text-amber-300" :
+            "bg-sky-500/20 text-sky-300"
+          }`}>{ev.stage}</span>
+          <span className="w-56 shrink-0 truncate text-sm text-slate-300">{ev.title || ev.video_ref}</span>
+          <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-slate-800">
+            <div className={`h-full rounded-full ${ev.percent === 100 ? "bg-emerald-500" : "bg-indigo-500"}`}
+                 style={{ width: `${ev.percent ?? 0}%` }} />
+          </div>
+          <span className="w-10 shrink-0 text-right text-xs text-slate-400">{ev.percent ?? "–"}%</span>
+          <span className="w-40 shrink-0 truncate text-xs text-slate-500">{ev.detail}</span>
+        </div>
+      ))}
     </div>
   );
 }

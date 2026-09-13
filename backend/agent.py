@@ -15,6 +15,7 @@ from backend.db import session_scope
 from backend.jobs import scan_sources
 from backend.modules import clip_planner, ingestion, processor, publisher
 from backend.modules.alerter import send_alert
+from backend import monitor
 
 logger = logging.getLogger(__name__)
 
@@ -70,15 +71,24 @@ def _process_one(db: Session, video_id: int) -> bool:
     if video is None:
         return False
     logger.info("Processing video %s: %s", video.source_video_id, video.title)
+    monitor.event("download", video.source_video_id, video.title, 0, "starting download")
     try:
         video.status = "DOWNLOADING"
         db.flush()
 
-        raw_path = ingestion.download_video(video.original_url, video.source_video_id)
+        def _dl_progress(pct):
+            monitor.event("download", video.source_video_id, video.title, pct)
+
+        raw_path = ingestion.download_video(
+            video.original_url, video.source_video_id, on_progress=_dl_progress
+        )
         video.local_raw_path = raw_path
+        monitor.event("download", video.source_video_id, video.title, 100, "download complete")
 
         video.status = "PROCESSING"
         db.flush()
+        monitor.event("process", video.source_video_id, video.title, 0,
+                      "encoding full video + reels clips")
 
         os.makedirs(config.PROCESSED_DIR, exist_ok=True)
         full_out = os.path.join(config.PROCESSED_DIR, f"{video.source_video_id}_full.mp4")
@@ -86,7 +96,8 @@ def _process_one(db: Session, video_id: int) -> bool:
         video.local_full_path = full_out
 
         planned = clip_planner.plan_clips(video.duration or 0)
-        for spec in planned:
+        total_steps = 1 + len(planned)
+        for idx, spec in enumerate(planned):
             clip = models.Clip(
                 video_id=video.id,
                 part_number=spec["part_number"],
@@ -113,6 +124,9 @@ def _process_one(db: Session, video_id: int) -> bool:
             clip.local_clip_path = clip_out
             clip.status = "READY"
             db.flush()
+            monitor.event("process", video.source_video_id, video.title,
+                          int(100 * (idx + 2) / total_steps),
+                          f"clips encoded: {idx + 1}/{len(planned)}")
 
         clips = (
             db.query(models.Clip)
@@ -123,6 +137,8 @@ def _process_one(db: Session, video_id: int) -> bool:
         _enqueue_outputs(db, video, full_out, clips)
         video.status = "READY"
         db.flush()
+        monitor.event("process", video.source_video_id, video.title, 100,
+                      f"READY: full + {len(clips)} clips queued")
         logger.info("Video %s READY: full + %d clip(s) queued", video.source_video_id, len(clips))
         return True
     except Exception as exc:  # noqa: BLE001 - one bad video must not stop the batch
@@ -193,6 +209,11 @@ def _publish_entry(db: Session, entry: models.PublishingQueue) -> bool:
     entry.status = "UPLOADING"
     db.flush()
     video = db.get(models.Video, entry.video_id)
+    monitor.event(
+        "upload", video.source_video_id if video else "",
+        entry.clip.overlay_title if entry.clip else "", 0,
+        f"uploading {entry.post_type}",
+    )
     try:
         page_id = _setting_str(db, "fb_page_id", config.FB_PAGE_ID)
         token = _setting_str(db, "fb_page_access_token", config.FB_PAGE_ACCESS_TOKEN)
@@ -200,9 +221,14 @@ def _publish_entry(db: Session, entry: models.PublishingQueue) -> bool:
         if entry.post_type == "REGULAR_VIDEO":
             # Always publish the PROCESSED file (transforms applied), never raw.
             publish_path = video.local_full_path or video.local_raw_path or ""
+
+            def _up_progress(pct, _ref=video.source_video_id, _title=video.title):
+                monitor.event("upload", _ref, _title, pct)
+
             result = publisher.upload_full_video(
                 page_id, token, publish_path,
                 title=video.title, description=video.description or "",
+                on_progress=_up_progress,
             )
         else:
             clip = db.get(models.Clip, entry.clip_id)
@@ -217,6 +243,8 @@ def _publish_entry(db: Session, entry: models.PublishingQueue) -> bool:
             result.get("post_id") or result.get("id") or result.get("success") or ""
         )
         entry.published_at = datetime.now(timezone.utc)
+        monitor.event("publish", video.source_video_id, video.title, 100,
+                      f"{entry.post_type} published (fb: {entry.fb_post_id})")
         entry.logs = f"Published at {entry.published_at.isoformat()}"
         if entry.post_type == "REELS" and entry.clip_id:
             clip = db.get(models.Clip, entry.clip_id)

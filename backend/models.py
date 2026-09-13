@@ -121,3 +121,17 @@ class SystemSetting(Base):
     value = Column(Text, nullable=False)
     description = Column(Text)
     updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class JobEvent(Base):
+    """Pipeline progress events for the dashboard (download/encode/upload/publish)."""
+
+    __tablename__ = "job_events"
+
+    id = Column(Integer, primary_key=True)
+    stage = Column(String(30), nullable=False)  # scan|download|process|upload|publish
+    video_ref = Column(String(255))  # source_video_id or queue entry ref
+    title = Column(String(500))
+    percent = Column(Integer)  # 0-100, None for informational events
+    detail = Column(Text)
+    created_at = Column(DateTime(timezone=True), default=utcnow)

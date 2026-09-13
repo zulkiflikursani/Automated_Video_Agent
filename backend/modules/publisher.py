@@ -77,6 +77,7 @@ def upload_full_video_resumable(
     title: str,
     description: str,
     chunk_size: int = 8 * 1024 * 1024,
+    on_progress=None,
 ) -> dict:
     """Resumable/chunked upload (start -> transfer per chunk -> finish).
 
@@ -105,6 +106,7 @@ def upload_full_video_resumable(
     ).json()
     if "error" in start_res:
         raise PublishingError(f"FB resumable start error: {start_res['error']}")
+    upload_full_video_resumable._last_pct = -10
     video_id = start_res.get("video_id")
     session_id = start_res.get("upload_session_id")
     start_offset = int(start_res.get("start_offset", 0))
@@ -187,8 +189,12 @@ def upload_full_video_resumable(
                 else:
                     start_offset, end_offset = q_start, max(q_end, q_start + 1)
             end_offset = min(max(end_offset, start_offset + 1), size)
+            pct = int(100 * start_offset / size)
             logger.info("Resumable progress: %d/%d bytes (%.0f%%), next window=%d-%d",
-                        start_offset, size, 100 * start_offset / size, start_offset, end_offset)
+                        start_offset, size, pct, start_offset, end_offset)
+            if on_progress and pct >= getattr(upload_full_video_resumable, "_last_pct", -1) + 10:
+                upload_full_video_resumable._last_pct = pct
+                on_progress(min(pct, 99))
 
     # --- finish phase ---
     finish_res = requests.post(
