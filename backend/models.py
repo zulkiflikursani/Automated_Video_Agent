@@ -47,6 +47,7 @@ class Video(Base):
     duration = Column(Integer)  # seconds
     original_url = Column(Text, nullable=False)
     local_raw_path = Column(Text)
+    local_full_path = Column(Text)  # processed 16:9 output (watermark/pitch applied)
     # PENDING, DOWNLOADING, PROCESSING, READY, PUBLISHED, FAILED
     status = Column(String(50), default="PENDING")
     error_message = Column(Text)

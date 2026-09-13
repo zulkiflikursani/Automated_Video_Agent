@@ -6,6 +6,7 @@ the whole pipeline run end-to-end safely until real Page credentials are set.
 """
 import logging
 import os
+import time
 import uuid
 
 import requests
@@ -125,36 +126,41 @@ def upload_full_video_resumable(
             f.seek(start_offset)
             chunk = f.read(chunk_len)
             result = None
-            for attempt in range(1, 4):  # FB 381s are often transient; retry chunk
-                transfer_res = requests.post(
-                    url,
-                    headers={
-                        "Authorization": f"OAuth {page_access_token}",
-                        "file_size": str(size),
-                        "offset": str(start_offset),
-                    },
-                    files={
-                        "file_chunk": (
-                            os.path.basename(video_path), chunk, "video/mp4"
-                        )
-                    },
-                    timeout=1800,
-                )
+            last_err = ""
+            for attempt in range(1, 9):  # FB 381s/connection drops are often transient
                 try:
+                    transfer_res = requests.post(
+                        url,
+                        headers={
+                            "Authorization": f"OAuth {page_access_token}",
+                            "file_size": str(size),
+                            "offset": str(start_offset),
+                        },
+                        files={
+                            "file_chunk": (
+                                os.path.basename(video_path), chunk, "video/mp4"
+                            )
+                        },
+                        timeout=1800,
+                    )
                     result = transfer_res.json()
-                except ValueError:
-                    logger.warning("Chunk @%d attempt %d: non-JSON HTTP %s",
-                                   start_offset, attempt, transfer_res.status_code)
+                except (ValueError, requests.RequestException) as exc:
+                    last_err = f"attempt {attempt}: {str(exc)[:120]}"
+                    logger.warning("Chunk @%d %s", start_offset, last_err)
                     result = None
+                    time.sleep(min(2 ** attempt, 30))  # backoff 2,4,8,16,30,30,30
                     continue
                 if "error" in result:
-                    logger.warning("Chunk @%d attempt %d failed: %s",
-                                   start_offset, attempt, str(result["error"])[:150])
+                    last_err = str(result["error"])[:150]
+                    logger.warning("Chunk @%d attempt %d failed: %s", start_offset, attempt, last_err)
                     result = None
+                    time.sleep(min(2 ** attempt, 30))
                     continue
                 break
             if result is None:
-                raise PublishingError(f"FB transfer failed after retries at offset {start_offset}")
+                raise PublishingError(
+                    f"FB transfer failed after retries at offset {start_offset}: {last_err}"
+                )
 
             if "start_offset" in result:
                 # FB told us the next window explicitly.
@@ -200,7 +206,8 @@ def upload_full_video_resumable(
     if "error" in finish_res:
         raise PublishingError(f"FB resumable finish error: {finish_res['error']}")
     logger.info("Resumable finish: %s", finish_res)
-    return finish_res
+    # finish only returns {"success": true}; surface the real video id
+    return {**finish_res, "id": video_id}
 
 
 def upload_reels_video(

@@ -83,6 +83,7 @@ def _process_one(db: Session, video_id: int) -> bool:
         os.makedirs(config.PROCESSED_DIR, exist_ok=True)
         full_out = os.path.join(config.PROCESSED_DIR, f"{video.source_video_id}_full.mp4")
         processor.process_full_video(raw_path, full_out)
+        video.local_full_path = full_out
 
         planned = clip_planner.plan_clips(video.duration or 0)
         for spec in planned:
@@ -197,8 +198,10 @@ def _publish_entry(db: Session, entry: models.PublishingQueue) -> bool:
         token = _setting_str(db, "fb_page_access_token", config.FB_PAGE_ACCESS_TOKEN)
 
         if entry.post_type == "REGULAR_VIDEO":
+            # Always publish the PROCESSED file (transforms applied), never raw.
+            publish_path = video.local_full_path or video.local_raw_path or ""
             result = publisher.upload_full_video(
-                page_id, token, video.local_raw_path or "",
+                page_id, token, publish_path,
                 title=video.title, description=video.description or "",
             )
         else:
@@ -273,6 +276,8 @@ def run_garbage_collector() -> int:
         for video in published_videos:
             removed += _remove_file(video.local_raw_path)
             video.local_raw_path = None
+            removed += _remove_file(video.local_full_path)
+            video.local_full_path = None
 
         published_clips = (
             db.query(models.Clip)
